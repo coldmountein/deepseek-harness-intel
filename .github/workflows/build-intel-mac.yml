@@ -1,0 +1,75 @@
+name: Build Intel Mac
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-intel-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      DSH_DESKTOP_TARGET_PLATFORM: darwin
+      DSH_DESKTOP_TARGET_ARCH: x64
+      DSH_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Checkout source (scheduled builds use upstream master)
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: ${{ github.event_name == 'schedule' && 'deepseek-ai/deepseek-harness' || github.repository }}
+          ref: master
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Setup pnpm from package.json
+        uses: pnpm/action-setup@v5.0.0
+
+      - name: Check Intel architecture
+        run: |
+          uname -m
+          node -e "if (process.arch !== 'x64') process.exit(1)"
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Package unsigned Intel Mac installers
+        run: pnpm run package:desktop:mac:x64:unsigned
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: deepseek-harness-mac-x64-${{ github.run_number }}
+          include-hidden-files: true
+          path: |
+            apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.dmg
+            apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: intel-mac-build-logs-${{ github.run_number }}
+          include-hidden-files: true
+          path: apps/desktop/.desktop-build/packaging-runs/
+          if-no-files-found: ignore
+          retention-days: 7
