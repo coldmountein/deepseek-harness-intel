@@ -3,19 +3,59 @@ name: Build Intel Mac
 on:
   push:
     branches: [master]
+    paths: ['.github/workflows/build-intel-mac.yml']
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *'
-
+    - cron: '17 */6 * * *'
 permissions:
   contents: read
-
 concurrency:
-  group: build-intel-mac-${{ github.ref }}
-  cancel-in-progress: true
+  group: intel-mac-auto-release
+  cancel-in-progress: false
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      tag: ${{ steps.source.outputs.tag }}
+      needed: ${{ steps.source.outputs.needed }}
+    steps:
+      - name: Skip upstream commits already published successfully
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          def api(path, missing_ok=False):
+              for attempt in range(3):
+                  r = subprocess.run(['gh', 'api', path], text=True, capture_output=True)
+                  if r.returncode == 0:
+                      return json.loads(r.stdout)
+                  if missing_ok and 'HTTP 404' in r.stderr:
+                      return None
+                  if attempt == 2:
+                      raise RuntimeError(r.stderr)
+          sha = api('repos/deepseek-ai/deepseek-harness/commits/master')['sha']
+          tag = 'intel-' + sha
+          repo = os.environ['GITHUB_REPOSITORY']
+          release = api(f'repos/{repo}/releases/tags/{tag}', missing_ok=True)
+          assets = {a['name'] for a in (release or {}).get('assets', []) if a['size'] > 0}
+          complete = bool(release and not release['draft'] and
+                          any(n.endswith('.dmg') for n in assets) and
+                          any(n.endswith('.zip') for n in assets) and
+                          {'SHA256SUMS.txt', 'source.json'} <= assets)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'sha={sha}\ntag={tag}\nneeded={str(not complete).lower()}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write(f'Upstream: {sha}\n\n' + ('Already published; skipped.' if complete else 'New or incomplete release; building.'))
+          PY
+
   build:
+    needs: check
+    if: needs.check.outputs.needed == 'true'
     runs-on: macos-15-intel
     timeout-minutes: 180
     defaults:
@@ -26,45 +66,61 @@ jobs:
       DSH_DESKTOP_TARGET_ARCH: x64
       DSH_TELEMETRY_DISABLED: '1'
     steps:
-      - name: Checkout source (scheduled builds use upstream master)
+      - name: Checkout exact upstream source
         uses: actions/checkout@v7.0.1
         with:
-          repository: ${{ github.event_name == 'schedule' && 'deepseek-ai/deepseek-harness' || github.repository }}
-          ref: master
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ needs.check.outputs.sha }}
           persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: '24'
-
-      - name: Setup pnpm from package.json
-        uses: pnpm/action-setup@v5.0.0
-
+      - uses: pnpm/action-setup@v5.0.0
       - name: Check Intel architecture
+        run: node -e "if (process.platform !== 'darwin' || process.arch !== 'x64') process.exit(1)"
+      - name: Install locked dependencies with retries
         run: |
-          uname -m
-          node -e "if (process.arch !== 'x64') process.exit(1)"
-
-      - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Package unsigned Intel Mac installers
-        run: pnpm run package:desktop:mac:x64:unsigned
-
-      - name: Upload installers
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then break; fi
+            [[ "$attempt" -lt 3 ]] || exit 1
+            sleep 20
+          done
+      - name: Package unsigned Intel Mac installers with retry
+        run: |
+          for attempt in 1 2; do
+            if pnpm run package:desktop:mac:x64:unsigned; then break; fi
+            [[ "$attempt" -lt 2 ]] || exit 1
+            sleep 20
+          done
+      - name: Collect installers, source identity and checksums
+        env:
+          SOURCE_SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          mkdir -p release
+          cp apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.dmg release/
+          cp apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.zip release/
+          node --input-type=module - <<'JS'
+          import fs from 'node:fs';
+          const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+          if (!/^[0-9][0-9A-Za-z.+-]*$/.test(version)) throw new Error('Invalid version');
+          fs.writeFileSync('release/source.json', JSON.stringify({
+            repository: 'deepseek-ai/deepseek-harness', commit: process.env.SOURCE_SHA,
+            version, platform: 'darwin', arch: 'x64', signed: false,
+            run: process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + process.env.GITHUB_RUN_ID
+          }, null, 2) + '\n');
+          JS
+          cd release
+          shasum -a 256 *.dmg *.zip source.json > SHA256SUMS.txt
+          shasum -a 256 -c SHA256SUMS.txt
+      - name: Retain installers for publishing and recovery
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: deepseek-harness-mac-x64-${{ github.run_number }}
-          include-hidden-files: true
-          path: |
-            apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.dmg
-            apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.zip
+          name: intel-mac-installers
+          path: release/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
-
-      - name: Upload build diagnostics
+      - name: Retain failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -72,4 +128,88 @@ jobs:
           include-hidden-files: true
           path: apps/desktop/.desktop-build/packaging-runs/
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
+
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.check.outputs.tag }}
+      SOURCE_SHA: ${{ needs.check.outputs.sha }}
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: intel-mac-installers
+          path: release
+      - name: Verify checksums and publish complete Release
+        shell: bash
+        run: |
+          cd release
+          sha256sum -c SHA256SUMS.txt
+          version="$(jq -r '.version' source.json)"
+          test "$(jq -r '.commit' source.json)" = "$SOURCE_SHA"
+          title="DeepSeek Harness $version - Intel Mac (${SOURCE_SHA:0:12})"
+          printf '%s\n' \
+            'Automated community build for Intel Macs (macOS x64).' '' \
+            "Upstream version: $version" \
+            "Upstream source: https://github.com/deepseek-ai/deepseek-harness/commit/$SOURCE_SHA" \
+            "Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '' \
+            'Download the .dmg installer or .zip application archive below.' \
+            'Unsigned and not notarized. Built from upstream master; not an official DeepSeek release.' \
+            'SHA256SUMS.txt contains checksums. source.json identifies the exact source commit.' \
+            'The automatic Source code archives contain this automation repository. Application source is linked above.' > ../release-notes.md
+          retry() {
+            for attempt in 1 2 3; do
+              if "$@"; then return 0; fi
+              [[ "$attempt" -lt 3 ]] || return 1
+              sleep 20
+            done
+          }
+          prerelease=false
+          [[ "$version" != *-* ]] || prerelease=true
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            retry gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "$title" --notes-file ../release-notes.md --draft
+          fi
+          retry gh release upload "$RELEASE_TAG" *.dmg *.zip SHA256SUMS.txt source.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          retry gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "$title" --notes-file ../release-notes.md --prerelease="$prerelease" --draft=false
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Monthly activity to keep scheduled workflows active
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, datetime, json, os, subprocess
+          repo = os.environ['GITHUB_REPOSITORY']
+          path = f'repos/{repo}/contents/.github/intel-mac-heartbeat.txt'
+          month = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m') + '\n'
+          r = subprocess.run(['gh', 'api', path + '?ref=master'], capture_output=True, text=True)
+          old = None
+          if r.returncode == 0:
+              old = json.loads(r.stdout)
+              if base64.b64decode(old['content']).decode() == month:
+                  print('Monthly activity already recorded.')
+                  raise SystemExit(0)
+          elif 'HTTP 404' not in r.stderr:
+              raise RuntimeError(r.stderr)
+          payload = {'message': 'chore: keep Intel Mac release automation active',
+                     'content': base64.b64encode(month.encode()).decode(), 'branch': 'master'}
+          if old:
+              payload['sha'] = old['sha']
+          subprocess.run(['gh', 'api', '--method', 'PUT', path, '--input', '-'],
+                         input=json.dumps(payload), text=True, check=True, stdout=subprocess.DEVNULL)
+          PY
