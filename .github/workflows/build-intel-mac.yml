@@ -158,6 +158,7 @@ jobs:
           title="DeepSeek Harness $version - Intel Mac (${SOURCE_SHA:0:12})"
           printf '%s\n' \
             'Automated community build for Intel Macs (macOS x64).' '' \
+            'Latest means the newest successful Intel Mac build, not upstream stability. Original alpha/beta/rc version labels are preserved.' '' \
             "Upstream version: $version" \
             "Upstream source: https://github.com/deepseek-ai/deepseek-harness/commit/$SOURCE_SHA" \
             "Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '' \
@@ -172,8 +173,6 @@ jobs:
               sleep 20
             done
           }
-          prerelease=false
-          [[ "$version" != *-* ]] || prerelease=true
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             retry gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" --title "$title" --notes-file ../release-notes.md --draft
@@ -181,7 +180,7 @@ jobs:
           retry gh release upload "$RELEASE_TAG" *.dmg *.zip SHA256SUMS.txt source.json \
             --repo "$GITHUB_REPOSITORY" --clobber
           retry gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --title "$title" --notes-file ../release-notes.md --prerelease="$prerelease" --draft=false
+            --title "$title" --notes-file ../release-notes.md --prerelease=false --draft=false --latest
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
 
   keepalive:
