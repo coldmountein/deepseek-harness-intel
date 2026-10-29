@@ -45,7 +45,6 @@ jobs:
           assets = {a['name'] for a in (release or {}).get('assets', []) if a['size'] > 0}
           complete = bool(release and not release['draft'] and
                           any(n.endswith('.dmg') for n in assets) and
-                          any(n.endswith('.zip') for n in assets) and
                           {'SHA256SUMS.txt', 'source.json'} <= assets)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f'sha={sha}\ntag={tag}\nneeded={str(not complete).lower()}\n')
@@ -98,7 +97,9 @@ jobs:
         run: |
           mkdir -p release
           cp apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.dmg release/
-          cp apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.zip release/
+          for file in apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts/*.zip; do
+            if [[ -f "$file" ]]; then cp "$file" release/; fi
+          done
           node --input-type=module - <<'JS'
           import fs from 'node:fs';
           const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
@@ -110,6 +111,7 @@ jobs:
           }, null, 2) + '\n');
           JS
           cd release
+          shopt -s nullglob
           shasum -a 256 *.dmg *.zip source.json > SHA256SUMS.txt
           shasum -a 256 -c SHA256SUMS.txt
       - name: Retain installers for publishing and recovery
@@ -149,6 +151,7 @@ jobs:
         shell: bash
         run: |
           cd release
+          shopt -s nullglob
           sha256sum -c SHA256SUMS.txt
           version="$(jq -r '.version' source.json)"
           test "$(jq -r '.commit' source.json)" = "$SOURCE_SHA"
@@ -158,7 +161,7 @@ jobs:
             "Upstream version: $version" \
             "Upstream source: https://github.com/deepseek-ai/deepseek-harness/commit/$SOURCE_SHA" \
             "Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '' \
-            'Download the .dmg installer or .zip application archive below.' \
+            'Download the .dmg installer below. A .zip is included only when produced by the upstream build.' \
             'Unsigned and not notarized. Built from upstream master; not an official DeepSeek release.' \
             'SHA256SUMS.txt contains checksums. source.json identifies the exact source commit.' \
             'The automatic Source code archives contain this automation repository. Application source is linked above.' > ../release-notes.md
