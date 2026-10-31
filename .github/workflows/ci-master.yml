@@ -138,8 +138,9 @@ jobs:
   # drill does not appear in PR checks. No cache steps because the VM's
   # persistent pnpm store and tool caches make them redundant (and saving here
   # would poison the hosted cache namespace with self-hosted paths).
+  # Forks require their own runners and DSH_ENABLE_SELF_HOSTED_CI=true.
   serial-linux-selfhosted:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && (github.repository == 'deepseek-ai/deepseek-harness' || github.repository == 'deepseek-harness/deepseek-harness' || vars.DSH_ENABLE_SELF_HOSTED_CI == 'true')
     name: serial / linux (self-hosted standby)
     runs-on: [self-hosted, linux, x64, vm-backup]
     steps:
@@ -232,8 +233,9 @@ jobs:
   # because the VM's persistent pnpm store and tool caches make them redundant
   # (and saving here would poison the hosted cache namespace with self-hosted
   # paths).
+  # Forks require their own runners and DSH_ENABLE_SELF_HOSTED_CI=true.
   serial-windows:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && (github.repository == 'deepseek-ai/deepseek-harness' || github.repository == 'deepseek-harness/deepseek-harness' || vars.DSH_ENABLE_SELF_HOSTED_CI == 'true')
     name: serial / windows (self-hosted standby)
     runs-on: [self-hosted, dsh-win-ci, windows]
     timeout-minutes: 120
