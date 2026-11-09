@@ -23,9 +23,10 @@ jobs:
     steps:
       # GitHub merges upstream history while retaining fork commits. Conflicts
       # stop this run; the workflow never resets or force-pushes master.
+      # A repository-scoped token also permits upstream workflow file updates.
       - name: Merge upstream and verify source ancestry
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -33,8 +34,8 @@ jobs:
           response="$RUNNER_TEMP/upstream-sync.json"
           if ! gh api --method POST "repos/$GITHUB_REPOSITORY/merge-upstream" \
             --field branch=master > "$response"; then
-            echo '::error::Upstream sync failed. Resolve any merge conflict before retrying; master was not force-replaced.'
-            echo 'Upstream sync failed. Review the error above and resolve any merge conflict before retrying.' >> "$GITHUB_STEP_SUMMARY"
+            echo '::error::Upstream sync failed. For workflows permission errors, configure UPSTREAM_SYNC_TOKEN with Contents and Workflows read/write access to this repository; otherwise resolve the reported merge conflict.'
+            echo 'Upstream sync failed. Workflow file updates require the UPSTREAM_SYNC_TOKEN repository secret with Contents and Workflows read/write permissions. Merge conflicts require manual resolution; no history is force-replaced.' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           owner="${GITHUB_REPOSITORY%%/*}"
