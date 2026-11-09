@@ -1,0 +1,51 @@
+name: Sync upstream source
+
+on:
+  schedule:
+    - cron: '5 */6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths: ['.github/workflows/sync-upstream.yml']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-source
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'coldmountein/deepseek-harness-intel'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # GitHub merges upstream history while retaining fork commits. Conflicts
+      # stop this run; the workflow never resets or force-pushes master.
+      - name: Merge upstream and verify source ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_sha="$(gh api repos/deepseek-ai/deepseek-harness/commits/master --jq .sha)"
+          response="$RUNNER_TEMP/upstream-sync.json"
+          if ! gh api --method POST "repos/$GITHUB_REPOSITORY/merge-upstream" \
+            --field branch=master > "$response"; then
+            echo '::error::Upstream sync failed. Resolve any merge conflict before retrying; master was not force-replaced.'
+            echo 'Upstream sync failed. Review the error above and resolve any merge conflict before retrying.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          owner="${GITHUB_REPOSITORY%%/*}"
+          behind="$(gh api "repos/deepseek-ai/deepseek-harness/compare/$upstream_sha...$owner:master" --jq .behind_by)"
+          if [[ "$behind" != 0 ]]; then
+            echo '::error::The fork does not yet contain the upstream commit observed at the start of this run.'
+            exit 1
+          fi
+          {
+            echo '## Upstream source synchronized'
+            python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["message"])' "$response"
+            printf '\nVerified upstream commit: `%s`\n' "$upstream_sha"
+            echo 'The fork contains this upstream history and retains its own commits.'
+          } >> "$GITHUB_STEP_SUMMARY"
