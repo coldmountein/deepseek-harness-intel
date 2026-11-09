@@ -382,8 +382,6 @@ jobs:
             Pop-Location
           }
 
-      # Forks opt into live tests with DSH_ENABLE_REAL_API_TESTS=true and the API secret.
-      # Keyless wheel tests and binary compatibility checks always remain enabled.
       - name: Preflight installed-wheel real API test (POSIX)
         if: >-
           inputs.ci
