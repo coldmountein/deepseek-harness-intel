@@ -82,12 +82,13 @@ export const VIEWER_ENDPOINT_CLASSES = {
   // No reader role names these, so the conservative class is owner-only. A share's method policy
   // decides whether one installed plugin's method reaches its viewers; this table only decides what
   // the core share roles grant.
-  'account/ackBonusNotified': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/cancelSignIn': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/getBalance': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/getProfile': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/getState': 'owner-only', // owner account and sign-in; the served page never reads it
-  'account/getUnnotifiedBonuses': 'owner-only', // owner account and sign-in; the served page never reads it
+  'account/getNotificationContent': 'owner-only', // owner account and sign-in; the served page never reads it
+  'account/getNotifications': 'owner-only', // owner account and sign-in; the served page never reads it
+  'account/reportNotificationEvent': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/hasRunningAccountTasks': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/signOut': 'owner-only', // owner account and sign-in; the served page never reads it
   'account/startSignIn': 'owner-only', // owner account and sign-in; the served page never reads it
@@ -120,6 +121,7 @@ export const VIEWER_ENDPOINT_CLASSES = {
   'terminal/rename': 'owner-only', // owner terminals
   'terminal/retain': 'owner-only', // owner terminals
   'terminal/shells': 'owner-only', // owner terminals
+  'terminal/watch': 'owner-only', // owner terminals
   'directoryPicker/createDirectory': 'owner-only', // owner filesystem picker
   'directoryPicker/list': 'owner-only', // owner filesystem picker
   'directoryPicker/pick': 'owner-only', // owner filesystem picker
@@ -137,6 +139,7 @@ export const VIEWER_ENDPOINT_CLASSES = {
   'workspaceFiles/list': 'owner-only', // owner Workspace file access'
   'workspaceFiles/read': 'owner-only', // absolute paths reach files outside the Workspace, so no share offers it
   'workspaceFiles/readBytes': 'owner-only', // absolute paths reach files outside the Workspace, so no share offers it
+  'workspaceFiles/search': 'owner-only', // owner Workspace file access
   'workspaceFiles/stat': 'owner-only', // absolute paths reach files outside the Workspace, so no share offers it
   'pluginManager/cancelInstall': 'owner-only', // owner plugin management
   'pluginManager/inspect': 'owner-only', // owner plugin management
@@ -162,8 +165,8 @@ export const VIEWER_ENDPOINT_CLASSES = {
   'productAnalytics/watchPolicy': 'owner-only', // owner product analytics
   'pluginRegistryProbe/fastest': 'owner-only', // owner plugin registry probe
   'sessionReferenceResolver/candidates': 'owner-only', // owner composer reference resolution
-  'officeToPdf/generation': 'owner-only', // owner document export
-  'officeToPdf/render': 'owner-only', // owner document export
+  'officeKit/generation': 'owner-only', // owner document export
+  'officeKit/render': 'owner-only', // owner document export
   'speech/cancelPreparation': 'owner-only', // owner voice input
   'speech/catalog': 'owner-only', // owner voice input
   'speech/configure': 'owner-only', // owner voice input
@@ -235,6 +238,7 @@ export const VIEWER_ENDPOINT_CLASSES = {
   'liveshareShares/audit': 'owner-only',
   'liveshareShares/capabilities': 'owner-only',
   'liveshareShares/create': 'owner-only',
+  'liveshareShares/addSessions': 'owner-only',
   'liveshareShares/identity': 'owner-only',
   'liveshareShares/list': 'owner-only',
   'liveshareShares/relay': 'owner-only',

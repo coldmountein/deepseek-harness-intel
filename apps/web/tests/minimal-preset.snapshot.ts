@@ -27,7 +27,7 @@ import {
   webSnapshotMode,
   type WebScaffold,
 } from './scaffold.ts'
-import { expandOwningTurnProcess, newEnglishPage, saveFailureShot } from './support.ts'
+import { expandOwningTurnProcess, loadEarlierChatPage, newEnglishPage, saveFailureShot } from './support.ts'
 
 const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/minimal-preset', import.meta.url))
 const FIXTURE = join(SNAPSHOT_DIR, 'session.v3.jsonl')
@@ -94,7 +94,7 @@ describe('minimal agent preset', () => {
       ? [event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('')]
       : [])
     expect(runtimeContexts).toEqual([
-      `Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent working directory: ${JSON.stringify(agentHandle.agent.session.header.cwd)}.`,
+      `<system-reminder>\nThe following information describes your current session:\n\nCurrent working directory: ${JSON.stringify(agentHandle.agent.session.header.cwd)}.\n</system-reminder>`,
     ])
     expect(scaffold.ctx.agentPresets.serviceFor(agentHandle.agent, 'fs')).toBeUndefined()
     expect(scaffold.ctx.agentPresets.serviceFor(agentHandle.agent, 'compaction')).toBeDefined()
@@ -485,7 +485,7 @@ describe('minimal image reading', () => {
     page = await openSession(pagedId)
     await page.getByText('Later image-history message 53', { exact: true }).waitFor()
     expect(await page.locator('[data-tool="read_image"]').count()).toBe(0)
-    await page.getByRole('button', { name: 'Load earlier', exact: true }).click()
+    await loadEarlierChatPage(page)
     card = await imageCard(page)
     await expect.poll(() => card.locator('img').first().evaluate(img => img instanceof HTMLImageElement && img.naturalWidth)).toBe(1)
 

@@ -93,6 +93,7 @@ LEGACY_CUSTOM_DISABLED_ROWS = (
     "tool-fs",
     "tool-fs-search",
     "tool-goal",
+    "tool-office",
     "tool-plugin-manager",
     "tool-schedule",
     "tool-skill",
@@ -507,7 +508,7 @@ def completion_chunks(body: dict[str, object]) -> list[dict[str, object]]:
                 raise AssertionError("PTC mode must advertise only run_code")
             return tool_call_chunks(
                 "advanced-code", "run_code",
-                {"code": "return await tools.snapshot_double({ value: 21 })",
+                {"code": "inspect(await tools.snapshot_double({ value: 21 }))",
                  "description": "Call the configured Plugin tool"},
             )
         assert_advertised_tool(body, "snapshot_double")
@@ -535,7 +536,7 @@ def completion_chunks(body: dict[str, object]) -> list[dict[str, object]]:
         return tool_call_chunks(
             "call-code-worker",
             "run_code",
-            {"code": "return 6 * 7", "description": "Compute the smoke value"},
+            {"code": "inspect(6 * 7)", "description": "Compute the smoke value"},
         )
     if prompt == WORKFLOW_PROMPT:
         assert_advertised_tool(body, "workflow")
@@ -691,7 +692,7 @@ def advanced_tool_followup(
         if "42" not in tool_text:
             raise AssertionError(f"run_code returned no configured-tool value: {tool_text}")
         return tool_call_chunks("advanced-denied-ptc", "run_code", {
-            "code": "try { await tools.snapshot_double({ value: -1 }) } catch (error) { return error.message }",
+            "code": "try { await tools.snapshot_double({ value: -1 }) } catch (error) { inspect(error.message) }",
             "description": "Catch a structured inner tool denial",
         })
     if call_id == "advanced-denied-ptc" and tool_name == "run_code":
@@ -995,9 +996,8 @@ def _smoke_sdk_authoring_cached(base_url: str, executable: Path, update_snapshot
             assert len(requests) == 2, requests
             prompt = json.dumps(requests[0], ensure_ascii=False)
             assert ("- `office`:" in prompt) == (mode != "disabled"), mode
-            for name in ("office-docx", "office-pptx", "office-xlsx", "office-render", "office-recalculate", "office-export-pdf"):
+            for name in ("office-docx", "office-pptx", "office-xlsx"):
                 assert (name in prompt) == (mode != "disabled"), (mode, name)
-            assert "render --input" not in prompt and "libreofficeKit" not in prompt, mode
             assert ("CUSTOM_OFFICE_DOCX" in prompt) == (mode == "replacement"), mode
             tool_result = next(block for message in requests[1]["messages"]
                                for block in message.get("content", [])
@@ -1155,7 +1155,7 @@ def smoke_sdk_office(executable: Path) -> None:
         patch = root / f"{mode}.patch.yml"
         patch.write_text(json.dumps([{"insert": [{
             "id": "python-sdk-office-smoke",
-            "inject": ["skills"],
+            "inject": ["officeKit"],
             "name": plugin.as_uri(),
             "config": {"input": str(document), "output": str(output), "result": str(result_path),
                        "imageInput": str(documents["pptx"]), "imageOutput": str(root / "node-pptx")},

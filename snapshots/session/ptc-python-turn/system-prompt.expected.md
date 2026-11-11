@@ -31,7 +31,7 @@ create_goal may infer goal intent from a direct human request in any language. A
 
 Start independent delegations with `subagent` or `subagent_fork` together in one assistant message and continue useful work while they run. When only waiting for their results remains, end your turn instead of sleeping or polling; the next result starts a new turn. Collect the subagent results required to complete the task before giving the user a final answer.
 
-Agents may use different working directories; changes to shared files affect other agents. Split parallel write work into disjoint file or directory scopes. Bash, formatters, code generators, and scripts can overwrite concurrent edits without conflict detection; coordinate their changes explicitly. The agent integrating the work must review the final diff and run relevant tests.
+Bash, formatters, code generators, and scripts can overwrite concurrent edits without conflict detection; coordinate their changes explicitly. The agent integrating the work must review the final diff and run relevant tests.
 
 ## Writing code for run_code
 
@@ -235,14 +235,6 @@ class GrepOutputMatches(TypedDict):
 
 class GrepOutput(TypedDict):
     matches: list[GrepOutputMatches]
-
-class InterruptAgentArgs(TypedDict):
-    # The name of an agent created under you: your direct child or a deeper descendant.
-    agent: str
-    # Additional keys beyond those declared are allowed.
-
-class InterruptAgentOutput(TypedDict):
-    accepted: bool
 
 class JobKillArgs(TypedDict):
     # Job id returned by the tool that started the background work.
@@ -551,8 +543,6 @@ class Tools(Protocol):
         """Find files, not directories, whose paths match a glob pattern, including hidden and ignored files. Returns up to 100 paths in modification-time order; a larger result keeps the first paths and reports where the complete list was saved."""
     async def grep(self, args: GrepArgs) -> GrepOutput:
         """Search file contents with a ripgrep regular expression. Returns matching lines with line numbers, grouped by file. Returns up to 250 matches; a larger result reports where the complete match list was saved."""
-    async def interrupt_agent(self, args: InterruptAgentArgs) -> InterruptAgentOutput:
-        """Ask a subagent to stop its current work. This call returns without waiting for it to stop. You can continue a local subagent's conversation later with send_message. External executions stop permanently and cannot receive follow-ups. Subagents it started will keep running."""
     async def job_kill(self, args: JobKillArgs) -> JobKillOutput:
         """Request cancellation of a running background job."""
     async def job_list(self, args: dict[str, Any]) -> list[JobListOutput]:
