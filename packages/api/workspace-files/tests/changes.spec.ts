@@ -504,12 +504,13 @@ describe('workspaceFiles.changes — backends and access', () => {
       const stream = open(service, harness.workspace)
       await ready(stream)
       ensureNativeWatchLive(harness.workspace)
-      const pending = stream.next()
       if (operation === 'remove') await rm(path)
       else await writeFile(path, 'after external mutation')
       const info = await harness.ctx.fs.stat(target)
       expect(info?.type).toBe('directory')
-      await expect(pending).resolves.toEqual({
+      // Metadata is sampled when pulled. Finish the mutation first so a queued
+      // Darwin invalidation cannot stat the directory before rm() settles.
+      await expect(stream.next()).resolves.toEqual({
         done: false,
         value: {
           kind: 'change',
