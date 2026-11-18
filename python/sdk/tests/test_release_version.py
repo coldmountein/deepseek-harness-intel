@@ -26,6 +26,27 @@ def test_release_tag_is_optional_for_non_release_builds() -> None:
     build_python_release.validate_release_tag(None, "1.2.3")
 
 
+def test_wheel_compression_preserves_payload_record_and_executable_mode(tmp_path: Path) -> None:
+    wheel = tmp_path / "runtime.whl"
+    executable = zipfile.ZipInfo("runtime/dsh")
+    executable.external_attr = 0o100755 << 16
+    payload = b"native-runtime-payload" * 10000
+    record = b"runtime/dsh,sha256:unchanged,220000\n"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.comment = b"wheel comment"
+        archive.writestr(executable, payload)
+        archive.writestr("runtime.dist-info/RECORD", record)
+    size = wheel.stat().st_size
+    build_python_release.compress_wheel(wheel)
+    assert wheel.stat().st_size < size
+    with zipfile.ZipFile(wheel) as archive:
+        assert archive.read("runtime/dsh") == payload
+        assert archive.read("runtime.dist-info/RECORD") == record
+        assert archive.getinfo("runtime/dsh").external_attr >> 16 == 0o100755
+        assert archive.comment == b"wheel comment"
+        assert archive.testzip() is None
+
+
 def test_wheel_verification_uses_distribution_metadata_not_nested_libraries(tmp_path: Path) -> None:
     wheel = tmp_path / "sdk.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
