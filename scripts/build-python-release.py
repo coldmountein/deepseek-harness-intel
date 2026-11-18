@@ -21,6 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SDK_DISTRIBUTION = "deepseek-harness-sdk"
 RUNTIME_DISTRIBUTION = "deepseek-harness-runtime-bin"
 PLATFORM_MANIFEST = ROOT / "python" / "sdk-runtime" / "platforms.json"
+# Warehouse defines its default upload limit as 100 * ONE_MIB.
+# https://github.com/pypi/warehouse/blob/main/warehouse/constants.py
+PYPI_MAX_FILE_BYTES = 100 * 1024 * 1024
 
 
 def load_platforms(path: Path = PLATFORM_MANIFEST) -> dict[str, tuple[str, str]]:
@@ -93,7 +96,7 @@ def main() -> None:
         subprocess.run(command, cwd=ROOT, env=None if environment is None else {**os.environ, **environment}, check=True)
     if not expected.is_file():
         raise RuntimeError(f"build did not produce expected wheel: {expected}")
-    if expected.stat().st_size > 100_000_000:
+    if expected.stat().st_size > PYPI_MAX_FILE_BYTES:
         compress_wheel(expected)
     verify_wheel(expected, args.package, wheel_version, None if args.platform is None else PLATFORMS[args.platform])
     print(expected)
@@ -254,8 +257,8 @@ def verify_wheel(
     version: str,
     platform: tuple[str, str] | None,
 ) -> None:
-    if wheel.stat().st_size > 100_000_000:
-        raise RuntimeError(f"{wheel} is {wheel.stat().st_size} bytes and exceeds the PyPI single-file limit of 100000000 bytes")
+    if wheel.stat().st_size > PYPI_MAX_FILE_BYTES:
+        raise RuntimeError(f"{wheel} is {wheel.stat().st_size} bytes and exceeds the PyPI single-file limit of {PYPI_MAX_FILE_BYTES} bytes (100 MiB)")
     expected_tag = "py3-none-any" if platform is None else f"py3-none-{platform[0]}"
     expected_distribution = SDK_DISTRIBUTION if package == "sdk" else RUNTIME_DISTRIBUTION
     dist_info = f"{expected_distribution.replace('-', '_')}-{version}.dist-info"
