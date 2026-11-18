@@ -47,9 +47,13 @@ def test_wheel_compression_preserves_payload_record_and_executable_mode(tmp_path
         assert archive.testzip() is None
 
 
-def test_wheel_verification_uses_distribution_metadata_not_nested_libraries(tmp_path: Path) -> None:
+@pytest.mark.parametrize("prefix_size", [0, 100_000_001])
+def test_wheel_verification_uses_distribution_metadata_not_nested_libraries(tmp_path: Path, prefix_size: int) -> None:
     wheel = tmp_path / "sdk.whl"
-    with zipfile.ZipFile(wheel, "w") as archive:
+    # A sparse prefix exercises a valid >100 MB, <100 MiB wheel without a large payload in memory.
+    with wheel.open("wb") as output:
+        output.truncate(prefix_size)
+    with zipfile.ZipFile(wheel, "a") as archive:
         archive.writestr("nested/library.dist-info/WHEEL", "Tag: cp312-cp312-linux_x86_64\n")
         archive.writestr("nested/library.dist-info/METADATA", "Name: library\nVersion: 0.0.1\n")
         archive.writestr("deepseek_harness_sdk-1.2.3.dist-info/WHEEL", "Tag: py3-none-any\n")
@@ -215,6 +219,6 @@ def test_stage_runtime_rejects_a_noncanonical_executable_name(tmp_path: Path) ->
 def test_wheel_verification_rejects_oversized_artifacts(tmp_path: Path) -> None:
     wheel = tmp_path / "oversized.whl"
     with wheel.open("wb") as output:
-        output.truncate(100_000_001)
+        output.truncate(100 * 1024 * 1024 + 1)
     with pytest.raises(RuntimeError, match="PyPI single-file limit"):
         build_python_release.verify_wheel(wheel, "runtime", "1.2.3", ("win_amd64", "runtime.exe"))
