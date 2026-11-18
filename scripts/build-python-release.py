@@ -93,8 +93,27 @@ def main() -> None:
         subprocess.run(command, cwd=ROOT, env=None if environment is None else {**os.environ, **environment}, check=True)
     if not expected.is_file():
         raise RuntimeError(f"build did not produce expected wheel: {expected}")
+    if expected.stat().st_size > 100_000_000:
+        compress_wheel(expected)
     verify_wheel(expected, args.package, wheel_version, None if args.platform is None else PLATFORMS[args.platform])
     print(expected)
+
+
+def compress_wheel(wheel: Path) -> None:
+    """Try maximum standard ZIP compression without changing wheel payloads."""
+    # Hatchling uses zlib's default level. Large native carriers can exceed PyPI's
+    # limit by a small margin; retain the size gate after this lossless pass.
+    with tempfile.TemporaryDirectory(prefix="dsh-wheel-compress-", dir=wheel.parent) as temporary:
+        compressed = Path(temporary) / wheel.name
+        with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(compressed, "w") as destination:
+            destination.comment = source.comment
+            for member in source.infolist():
+                destination.writestr(
+                    member, source.read(member),
+                    compress_type=zipfile.ZIP_DEFLATED, compresslevel=9,
+                )
+        if compressed.stat().st_size < wheel.stat().st_size:
+            compressed.replace(wheel)
 
 
 def repository_version(root: Path = ROOT) -> str:
