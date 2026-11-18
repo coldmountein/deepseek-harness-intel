@@ -103,7 +103,9 @@ def render_cli(
         try:
             result = subprocess.run([
                 *command, "render", "--input", str(document), "--output-dir", str(directory / f"cli-{extension}"),
-                "--dpi", "72", "--timeout-ms", "120000", *selection,
+                # Cold Office startup on hosted Intel Macs shares the lane's
+                # contention budget; keep the outer process deadline larger.
+                "--dpi", "72", "--timeout-ms", "300000", *selection,
             ], env=environment, capture_output=True, text=True, encoding="utf-8", timeout=480)
             if result.returncode:
                 raise AssertionError(f"exit {result.returncode}: {result.stderr}")
