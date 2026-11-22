@@ -19,7 +19,7 @@ import type { ForgeReviewThread } from '@deepseek-ai/dsh-experimental-forge/type
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
 import type {
-  ForgeChangeRequestListState, ForgeChangeRequestStatesFrame, ForgeExtensionState,
+  ForgeChangeRequestListState, ForgeChangeRequestStatesFrame, ForgeExtensionState, ForgePanelState,
 } from '../types.ts'
 import { actionReporter } from './action-notices.ts'
 import { AnnotationView } from './annotations.ts'
@@ -48,7 +48,7 @@ import type { SessionListInjected } from './session-list.ts'
 import { SessionHoverForge } from './SessionHoverForge.tsx'
 import { SessionRowForge } from './SessionRowForge.tsx'
 import {
-  createNoticeSource, createPanelSource, createStreamSource, foldStates, type PanelSource,
+  createNoticeSource, createPanelSource, createStreamSource, foldStates, pageVisibility, type PanelSource, type PanelStream,
 } from './source.ts'
 import { numberOf, type ChangeRequestEntry } from './status.ts'
 import type { WorktreeRequestResult } from './WorktreeNameDialog.tsx'
@@ -79,7 +79,7 @@ interface SessionStores {
   readonly panel: PanelSource
   readonly reviews: WeakMap<AbortSignal, ReviewQueue>
   readonly viewed: ViewedFiles
-  /** Refresh unless an automatic refresh of this Session ran within {@link AUTO_REFRESH_MIN_MS}. */
+  /** Revisit the Session's panel on the Host unless an automatic revisit of this Session ran within {@link AUTO_REFRESH_MIN_MS}. */
   readonly refreshIfStale: () => void
   /** Plugin annotations of each changes view of the Session, by address. */
   readonly annotations: Map<string, AnnotationView>
@@ -87,9 +87,9 @@ interface SessionStores {
 }
 
 /**
- * Least time between automatic refreshes of one Session, which run when the
+ * Least time between automatic revisits of one Session, which run when the
  * Session panel opens and when the window regains focus; repeated focus
- * changes then cost one checkout inspection and code host poll.
+ * changes then cost one checkout inspection.
  */
 const AUTO_REFRESH_MIN_MS = 10_000
 
@@ -115,6 +115,34 @@ function registerUi(ctx: Context): void {
     })
     return { text: t('toast.archiveCleanupScheduled'), tone: 'success' }
   })
+  /**
+   * Follow a Session's panel only after its own history connection opened: the Host resolves the `follow` argument
+   * by resuming the Session's Agent, which would otherwise read the Session log a second time beside that opening.
+   * The stream holds a Session reference until it ends, and calls `followed` once its first state arrived.
+   */
+  const followOpened = (sessionId: SessionId, signal: AbortSignal, followed: () => void): PanelStream => {
+    let inner: PanelStream | undefined
+    async function* frames(): AsyncGenerator<ForgePanelState> {
+      const reference = ctx.sessions.retain(sessionId, { source: 'forgePanel', signal })
+      try {
+        const state = (await reference.ready).session.getSnapshot()
+        if (state.openState !== 'open') throw state.openError ?? new Error(`forge-panel: Session ${sessionId} is not open`)
+        inner = ctx.remote.forgePanel.follow(sessionId, signal)
+        let first = true
+        for await (const frame of inner) {
+          yield frame
+          // The source published the frame before asking for the next one.
+          if (first) {
+            first = false
+            followed()
+          }
+        }
+      } finally {
+        reference.release()
+      }
+    }
+    return Object.assign(frames(), { dispose: () => { inner?.dispose() } })
+  }
   const stores = new Map<SessionId, SessionStores>()
   ctx.effect(() => () => {
     for (const store of [...stores.values()]) store.release()
@@ -125,9 +153,16 @@ function registerUi(ctx: Context): void {
     if (store === undefined) {
       const scope = ctx.sessions.scope(sessionId)
       if (scope === undefined) throw new Error(`forge-panel: Session ${sessionId} is not retained`)
+      // A refresh asked for before the Host follows the panel would find no panel there, so it waits for the first state.
+      let deferred = false
       const panel = createPanelSource({
-        open: signal => ctx.remote.forgePanel.follow(sessionId, signal),
+        open: signal => followOpened(sessionId, signal, () => {
+          if (!deferred) return
+          deferred = false
+          refreshIfStale()
+        }),
         subscribeReset: listener => ctx.on('connection/reset', listener),
+        visibility: pageVisibility,
       })
       const dispose = scope.effect(() => () => {
         panel.close()
@@ -135,10 +170,14 @@ function registerUi(ctx: Context): void {
       }, 'forge-panel: release Session state')
       let refreshedAt: number | undefined
       const refreshIfStale = (): void => {
+        if (panel.hooks.panel.getSnapshot().state === null) {
+          deferred = true
+          return
+        }
         const now = Date.now()
         if (refreshedAt !== undefined && now - refreshedAt < AUTO_REFRESH_MIN_MS) return
         refreshedAt = now
-        void refreshOf(sessionId)()
+        void ctx.remote.forgePanel.revisit(sessionId).then((result) => { settled(result, 'toast.refreshFailed') })
       }
       store = {
         panel, reviews: new WeakMap(), viewed: new ViewedFiles(sessionId), annotations: new Map(), refreshIfStale,
@@ -339,7 +378,8 @@ function registerUi(ctx: Context): void {
       changeRequestDiff: (url, commits, signal) => ctx.remote.forgePanel.changeRequestDiff(sessionId, url, commits, signal),
       changeRequestCommits: (url, signal) => ctx.remote.forgePanel.changeRequestCommits(sessionId, url, signal),
       viewedFiles: store.viewed,
-      changeRequestViewed: (url, headSha, signal) => ctx.remote.forgePanel.changeRequestViewed(sessionId, url, headSha, signal),
+      changeRequestViewed: (url, headSha, fresh, signal) =>
+        ctx.remote.forgePanel.changeRequestViewed(sessionId, url, headSha, fresh, signal),
       setFileViewed: (url, request) => ctx.remote.forgePanel.setFileViewed(sessionId, url, request),
       changeRequestText: (url, commit, path) => ctx.remote.forgePanel.changeRequestText(sessionId, url, commit, path),
       addReviewToInput: selection => addReviewToInput(sessionId, selection),
@@ -475,6 +515,7 @@ function registerUi(ctx: Context): void {
   const states = createStreamSource<ForgeChangeRequestStatesFrame, ReadonlyMap<string, ForgeChangeRequestListState>>({
     open: signal => ctx.remote.forgePanel.changeRequestStates(signal),
     subscribeReset: listener => ctx.on('connection/reset', listener),
+    visibility: pageVisibility,
   }, new Map(), foldStates)
   ctx.effect(() => () => { states.close() }, 'forge-panel: change request states')
   const listFace = (): SessionListInjected => ({ hooks: { states: states.observable } })

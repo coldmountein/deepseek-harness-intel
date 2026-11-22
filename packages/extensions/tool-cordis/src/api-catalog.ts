@@ -83,9 +83,15 @@ export interface TypeApiEntry {
 export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
     key: 'actionCards',
-    summary: 'Kind registry, Session projection, user actions and status notices.',
-    description: 'Kind registry, Session projection, user actions and status notices.',
+    summary: 'Kind registry, skill switch, Session projection, user actions and status notices.',
+    description: 'Kind registry, skill switch, Session projection, user actions and status notices.',
     methods: [
+      {
+        signature: 'skillProvider(candidate: SkillCandidate, get: SkillProvider[\'get\']): (control: SkillProviderControl) => SkillProvider',
+        description: 'Build a kind\'s skill provider. It lists the skill while recommendations are enabled.',
+        parameters: [{ name: 'candidate', description: 'the skill\'s catalog entry.' }, { name: 'get', description: 'loads the skill\'s definition.' }],
+        returns: 'the factory the kind passes to `ctx.skills.registerProvider`.',
+      },
       {
         signature: 'register<Details>(kind: ActionCardKind<Details>): () => void',
         description: 'Register one action kind for the caller\'s lifetime.',
@@ -97,7 +103,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'record(agent: Agent, decision: ActionCardDecision): void',
         description: 'Record a card decision in the Session log; the next model request reports it.',
         parameters: [{ name: 'agent', description: 'agent whose Session owns the card.' }, { name: 'decision', description: 'the card\'s new state.' }],
-        throws: ['when no kind ever registered the decision\'s action with this service, or its phase is one the projection derives.'],
+        throws: ['when no kind ever registered the decision\'s action with this service.'],
       },
       {
         signature: 'view(session: Session): ActionCardView',
@@ -510,8 +516,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       {
         signature: 'readImageRequest( ref: ImageAttachmentRef, target: ImageRequestTarget, signal?: AbortSignal, ): Promise<RequestImageAttachment>',
         description: 'Generate or read one deterministic model-request version from the stored normalized image.',
-        parameters: [{ name: 'ref', description: 'durable provider-independent normalized attachment reference.' }, { name: 'target', description: 'route-chosen dimensions and byte target; an unmet byte target yields the smallest ladder output.' }, { name: 'signal', description: 'optional cancellation.' }],
-        returns: 'request bytes and the cache/upload identity covering every transform input.',
+        parameters: [{ name: 'ref', description: 'durable provider-independent normalized attachment reference.' }, { name: 'target', description: 'route-chosen maximum dimensions, hard byte limit, and preferred byte target.' }, { name: 'signal', description: 'optional cancellation.' }],
+        returns: 'request bytes within the hard limit, actual encoded dimensions, and a cache/upload identity covering every transform input.',
       },
     ],
   },
@@ -718,7 +724,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'abstract compactRegion( start: SessionSeq, end: SessionSeq, agent: CompactionAgentContext, signal?: AbortSignal, ): Promise<CompactionResult>',
-        description: 'Forcibly compact a range of surface nodes into a single summary node. `start` and `end` name an inclusive span by surface position, not numeric seq order; replacements can make visible seqs non-monotonic. Both edges must be balanced so assistant tool calls remain paired with their results. A model- backed implementation forwards cancellation and rejects active, missing, reversed, or unbalanced ranges. The target session is `agent.session`. Its replacement user message must use compactCheckpointSource with the transaction\'s `CompactionId`. Use toolPairingBalancedBefore and toolPairingBalancedAfter for the edge checks.',
+        description: 'Compact a balanced range of conversation nodes into a single summary node. The initial system node, when present, lies outside the selected range. `start` and `end` name an inclusive span by surface position, not numeric seq order; replacements can make visible seqs non-monotonic. Both edges must be balanced so assistant tool calls remain paired with their results. A model- backed implementation forwards cancellation and rejects active, missing, reversed, or unbalanced ranges. The target session is `agent.session`. Its replacement user message must use compactCheckpointSource with the transaction\'s `CompactionId`. Use toolPairingBalancedBefore and toolPairingBalancedAfter for the edge checks.',
         parameters: [{ name: 'start', description: 'first surface seq, inclusive.' }, { name: 'end', description: 'last surface seq, inclusive.' }, { name: 'agent', description: 'context whose session is mutated and whose routing options guide summarization.' }, { name: 'signal', description: 'optional cancellation; model-backed implementations must forward it.' }],
         returns: 'the appended event seqs, summary, replaced range, and token accounting.',
         throws: ['when compaction is active or the range is missing, reversed, or unbalanced.'],
@@ -1050,10 +1056,16 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     methods: [
       {
         signature: 'release(agent: Agent): Promise<void>',
-        description: 'Release one Agent\'s retained program environment with the dedicated runtime\'s owner release. The program process exits, a program of that Agent that is still running fails as aborted, and the next `cua_run_code` call starts a fresh process that re-creates the `cua` global. The Agent, its application grants and native connection, and the desktop applications themselves are unaffected. The runtime rejects that Agent\'s programs until the release settles, so the caller holds them back; after a failed release it rejects them until a later release succeeds. Resolves when no environment exists.',
+        description: 'Release one Agent\'s retained program environment with the dedicated runtime\'s owner release. The program process exits, a program of that Agent that is still running fails as aborted, and the next `cua_run_code` call starts a fresh process that re-creates the `cua` global. The Agent, its application grants and native connection, and the desktop applications themselves are unaffected. Held input is released. The runtime rejects that Agent\'s programs until the release settles, so the caller holds them back; after a failed release it rejects them until a later release succeeds. Resolves when no environment exists.',
         parameters: [{ name: 'agent', description: 'Agent whose `cua_run_code` state owner is released.' }],
-        returns: 'Completion after the process has exited and its output has drained.',
-        throws: ['When the process cleanup fails.'],
+        returns: 'Completion after the process has exited, its output has drained, and held-input cleanup has settled.',
+        throws: ['When environment or input cleanup fails, reporting both causes if both fail.'],
+      },
+      {
+        signature: 'releaseInputs(agent: Agent): Promise<void>',
+        description: 'Release the Agent\'s tracked input while retaining its program variables and application grants. Providers without held-input state support retain their existing cancellation behavior.',
+        parameters: [{ name: 'agent', description: 'Owner of the input to release.' }],
+        returns: 'Completion after native acknowledgement, or rejection when cleanup is unconfirmed.',
       },
       {
         signature: 'screenshotRequestTarget(image: ImageAttachmentRef): ImageRequestTarget | undefined',
@@ -1340,14 +1352,14 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
     key: 'forge',
     summary: 'Registry of forge providers.',
-    description: 'Registry of forge providers. Watchers of one change request share a single polling loop; each forge has at most one fetch in flight, which batches every due change request of that forge.',
+    description: 'Registry of forge providers. Watchers of one change request share a single polling loop, which reads its snapshot while a snapshot watcher remains and its brief otherwise. Each forge has at most one snapshot fetch and one brief fetch in flight; each batches every due change request of that forge at its level, and those past the midpoint of the wait after a status, so change requests that became due at different times come to share one fetch. A fetch calls a provider that names a batch size once per that many change requests of a host, and settles the results of each call when it returns.',
     methods: [
       {
         signature: 'register(provider: ForgeProvider): () => Promise<void>',
         description: 'Register the provider of one forge family as an effect on the calling fiber. Watches of that forge receive an `unavailable` failure when the registration ends. Unregistering cancels and awaits its in-flight calls; results from the withdrawn registration are discarded.',
         parameters: [{ name: 'provider', description: 'provider to serve `provider.forge` on `provider.hosts`.' }],
         returns: 'the disposer that unregisters the provider and waits for its calls to finish.',
-        throws: ['when another provider already serves the same forge or one of the same hosts, compared without case.'],
+        throws: ['when another provider already serves the same forge or one of the same hosts, compared without case, and when the provider names a batch size that is not a positive safe integer.'],
       },
       {
         signature: 'describe(forge: string): ForgeDescription | undefined',
@@ -1541,21 +1553,32 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['when no provider serves the change request\'s forge.'],
       },
       {
-        signature: 'watch(ref: ChangeRequestRef, listener: ChangeRequestListener): () => void',
-        description: 'Watch one change request as an effect on the calling fiber. The first watcher starts polling at once; listeners receive every later result, and `latest` returns the current one. Polling stops when the last watcher leaves. Listeners must not throw; a thrown error is logged and skipped.',
-        parameters: [{ name: 'ref', description: 'change request to poll.' }, { name: 'listener', description: 'receives each polling result.' }],
+        signature: 'watch(ref: ChangeRequestRef, listener: ChangeRequestListener, options: ChangeRequestWatchOptions = {}): () => void',
+        description: 'Watch the snapshot of one change request as an effect on the calling fiber. Its first snapshot watcher polls it at once, and a later one does when `options.maxAgeMs` is given and the latest result is older. Listeners receive every later snapshot poll result, and `latest` returns the current one. While a snapshot watcher remains, polls read the snapshot; polling stops when the last watcher of the snapshot and the brief leaves. Listeners must not throw; a thrown error is logged and skipped.',
+        parameters: [{ name: 'ref', description: 'change request to poll.' }, { name: 'listener', description: 'receives each snapshot poll result.' }, { name: 'options', description: 'when the watcher needs a status newer than the latest one.' }],
         returns: 'the disposer that stops this watch.',
       },
       {
-        signature: 'refresh(ref: ChangeRequestRef): void',
-        description: 'Poll a watched change request at once, including after a terminal state. A fetch already in flight is followed immediately by another fetch; an unwatched change request is unchanged.',
-        parameters: [{ name: 'ref', description: 'change request to poll.' }],
+        signature: 'watchBrief(ref: ChangeRequestRef, listener: ChangeRequestBriefListener, known?: ChangeRequestKnownState): () => void',
+        description: 'Watch the brief of one change request as an effect on the calling fiber. Listeners receive the brief of every later poll result: of a brief read while only brief watchers remain, and of a snapshot read otherwise. The first watcher of a change request polls it at once, or as `known` times it. Polling stops when the last watcher of the snapshot and the brief leaves. Listeners must not throw; a thrown error is logged and skipped.',
+        parameters: [{ name: 'ref', description: 'change request to poll.' }, { name: 'listener', description: 'receives the brief of each poll result.' }, { name: 'known', description: 'the state the caller last saw, which times the first poll of a change request without a watcher.' }],
+        returns: 'the disposer that stops this watch.',
+      },
+      {
+        signature: 'refresh(ref: ChangeRequestRef, options: ChangeRequestWatchOptions = {}): void',
+        description: 'Poll a watched change request at once, including after a terminal state. A fetch already in flight is followed immediately by another fetch; an unwatched change request is unchanged. With `options.maxAgeMs`, the caller needs a status no older than that many milliseconds: a change request whose latest poll at either level, in flight or settled, started within them is left alone, and so is a merged one, whose status is final.',
+        parameters: [{ name: 'ref', description: 'change request to poll.' }, { name: 'options', description: 'when the caller needs a status newer than the latest one.' }],
+      },
+      {
+        signature: 'expectChange(ref: ChangeRequestRef): void',
+        description: 'Announce that a watched change request is about to change, as after a push to its head branch. It is polled at once and then every `activeIntervalMs`, until a status reports running checks or a closed or merged change request, and for at most `idleIntervalMs`; after that the regular cadence applies. A fetch already in flight is followed immediately by another fetch; an unwatched change request is unchanged.',
+        parameters: [{ name: 'ref', description: 'change request the caller expects to change.' }],
       },
       {
         signature: 'latest(ref: ChangeRequestRef): ChangeRequestUpdate | undefined',
-        description: 'Read the latest polling result of a watched change request.',
+        description: 'Read the latest snapshot poll result of a watched change request.',
         parameters: [{ name: 'ref', description: 'change request to read.' }],
-        returns: 'the latest result, or undefined before the first result or without a watch.',
+        returns: 'the latest result, or undefined before the first snapshot poll settled or without a watch.',
       },
     ],
   },
@@ -1664,9 +1687,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['`forgePanel/unrecognized-url` when no provider serves the URL; `forgePanel/diff-too-large` or `forgePanel/diff-failed` when the host does not provide the file.'],
       },
       {
-        signature: '@Remote async reviewViewed(url: string, headSha: string, signal: AbortSignal): Promise<ForgeViewedFiles | null>',
-        description: 'Read the signed-in user\'s viewed marks on the files of a change request the review page shows.',
-        parameters: [{ name: 'url', description: 'web URL of the change request.' }, { name: 'headSha', description: 'head commit of the shown diff.' }, { name: 'signal', description: 'request cancellation.' }],
+        signature: '@Remote async reviewViewed(url: string, headSha: string, fresh: boolean, signal: AbortSignal): Promise<ForgeViewedFiles | null>',
+        description: 'Read the signed-in user\'s viewed marks on the files of a change request the review page shows, as ForgePanelController.changeRequestViewed keeps them.',
+        parameters: [{ name: 'url', description: 'web URL of the change request.' }, { name: 'headSha', description: 'head commit of the shown diff.' }, { name: 'fresh', description: 'whether to read the host although kept marks could answer, as after a refresh.' }, { name: 'signal', description: 'request cancellation.' }],
         returns: 'the marks, or null when the provider keeps no viewed marks.',
         throws: ['`forgePanel/unrecognized-url` when no provider serves the URL; `forgePanel/stale-head` or `forgePanel/viewed-failed` as {@link ForgePanelController.changeRequestViewed} does.'],
       },
@@ -1714,15 +1737,15 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['`forgePanel/unrecognized-url` when no provider serves the URL; `forgePanel/stale-head`, `forgePanel/action-failed`, or `forgePanel/action-unknown` with the host\'s reason.'],
       },
       {
-        signature: '@Remote // oxlint-disable-next-line typescript/require-await -- async keeps a refused or cancelled request a rejection, as Remote callers expect async reviewStage(session: Session, url: string | null, signal: AbortSignal): Promise<void>',
+        signature: '@Remote // oxlint-disable-next-line typescript/require-await -- async keeps a refused or cancelled request a rejection, as Remote callers expect async reviewStage(sessionId: SessionId, url: string | null, signal: AbortSignal): Promise<void>',
         description: 'Remember the change request a review conversation\'s draft quotes, or forget it with null. When the Session\'s next message enters its inbox, the change request is bound to the Session with a `track` record before the turn starts; a Session that already started is bound at its next message. The choice lives in memory until then.',
-        parameters: [{ name: 'session', description: 'the Session whose draft quotes the change request.' }, { name: 'url', description: 'web URL of the change request, or null.' }, { name: 'signal', description: 'request cancellation.' }],
+        parameters: [{ name: 'sessionId', description: 'the Session whose draft quotes the change request; staging neither loads nor resumes it.' }, { name: 'url', description: 'web URL of the change request, or null.' }, { name: 'signal', description: 'request cancellation.' }],
         throws: ['`forgePanel/unrecognized-url` when no provider serves the URL.'],
       },
       {
-        signature: '@Remote async worktreeCleanup(session: Session, revision: number | null): Promise<WorktreeCleanup | null>',
+        signature: '@Remote async worktreeCleanup(sessionId: SessionId, revision: number | null): Promise<WorktreeCleanup | null>',
         description: 'Read or await the worktree service\'s archive cleanup of the Session\'s checkout.',
-        parameters: [{ name: 'session', description: 'Session whose cleanup is visible to the caller.' }, { name: 'revision', description: 'null reads now; a matching revision waits for completion.' }],
+        parameters: [{ name: 'sessionId', description: 'Session whose cleanup is visible to the caller; reading neither loads nor resumes it.' }, { name: 'revision', description: 'null reads now; a matching revision waits for completion.' }],
         returns: 'the cleanup state, or null without a worktree service, an attempt, or a current revision.',
       },
       {
@@ -1751,9 +1774,15 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'session', description: 'Session that owns the binding.' }, { name: 'url', description: 'web URL of the change request.' }, { name: 'signal', description: 'request cancellation.' }],
       },
       {
-        signature: '@Remote async refresh(session: Session, signal: AbortSignal): Promise<void>',
+        signature: '@Remote async refresh(sessionId: SessionId, signal: AbortSignal): Promise<void>',
         description: 'Reinspect a followed Session\'s checkout, probe sign-in again, and poll its change requests at once; an unfollowed Session is unchanged.',
-        parameters: [{ name: 'session', description: 'Session whose panel refreshes.' }, { name: 'signal', description: 'request cancellation.' }],
+        parameters: [{ name: 'sessionId', description: 'Session whose panel refreshes; refreshing neither loads nor resumes it.' }, { name: 'signal', description: 'request cancellation.' }],
+        returns: 'settles once the inspection and the sign-in probe have ended; poll results reach the panel stream later.',
+      },
+      {
+        signature: '@Remote async revisit(sessionId: SessionId, signal: AbortSignal): Promise<void>',
+        description: 'Bring a followed Session\'s panel up to date after its surface showed again: reinspect the checkout, poll the change requests whose latest poll is older than `statusMaxAgeMs`, probe sign-in again unless the last probe found the host ready, and look the upstream branch up again while the Session shows no change request; an unfollowed Session is unchanged.',
+        parameters: [{ name: 'sessionId', description: 'Session whose panel is revisited; revisiting neither loads nor resumes it.' }, { name: 'signal', description: 'request cancellation.' }],
         returns: 'settles once the inspection and the sign-in probe have ended; poll results reach the panel stream later.',
       },
       {
@@ -1826,9 +1855,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['`forgePanel/lens-missing` while no lens holds the identity or once its registration ends; `forgePanel/lens-stale` before a change request\'s status was read, when the files differ from `request.version`, and when local files changed while the lens ran; `forgePanel/lens-failed` when the lens fails, runs past `lensTimeoutMs`, reads past `maxLensReadBytes`, or answers over `maxCachedLensBytes`; the errors of `localDiff` and `changeRequestDiff` for the files.'],
       },
       {
-        signature: '@Remote async changeRequestViewed(session: Session, url: string, headSha: string, signal: AbortSignal): Promise<ForgeViewedFiles | null>',
-        description: 'Read the signed-in user\'s viewed marks on the files of a change request of a Session, which the host keeps for the whole change request.',
-        parameters: [{ name: 'session', description: 'Session the change request is bound to.' }, { name: 'url', description: 'binding URL of the change request.' }, { name: 'headSha', description: 'head commit of the shown diff; marks read at another head are refused.' }, { name: 'signal', description: 'request cancellation.' }],
+        signature: '@Remote async changeRequestViewed( session: Session, url: string, headSha: string, fresh: boolean, signal: AbortSignal, ): Promise<ForgeViewedFiles | null>',
+        description: 'Read the signed-in user\'s viewed marks on the files of a change request of a Session, which the host keeps for the whole change request. Marks read at the same head are kept in memory and returned until they are `reviewRefreshMs` old or `maxCachedReviewBytes` evicts them; a mark saved through `ctx.forge` at that head replaces the kept state of its file, so the read after a save costs no request.',
+        parameters: [{ name: 'session', description: 'Session the change request is bound to.' }, { name: 'url', description: 'binding URL of the change request.' }, { name: 'headSha', description: 'head commit of the shown diff; marks read at another head are refused.' }, { name: 'fresh', description: 'whether to read the host although kept marks could answer, as after a refresh.' }, { name: 'signal', description: 'request cancellation.' }],
         returns: 'the marks at `headSha`, or null when the provider keeps no viewed marks.',
         throws: ['`forgePanel/not-bound` unless the URL is a visible binding of the Session that a provider serves; `forgePanel/stale-head` when the head moved past `headSha`, which is then polled again; `forgePanel/viewed-failed` when the host does not provide the marks otherwise.'],
       },
@@ -1968,9 +1997,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'session', description: 'Session that owns the binding.' }, { name: 'url', description: 'web URL of the change request.' }],
       },
       {
-        signature: 'watch(session: Session, listener: SessionChangeRequestsListener): () => void',
-        description: 'Watch a Session\'s visible change requests as an effect on the calling fiber. Every visible change request that a provider recognizes is polled through `ctx.forge` while the Session has a watcher. Listeners receive the complete list after each later binding or provider change, or polling result; read the current list with changeRequests. Listeners must not throw; a thrown error is logged and skipped.',
-        parameters: [{ name: 'session', description: 'Session to watch.' }, { name: 'listener', description: 'receives the complete visible list.' }],
+        signature: 'watch(session: Session, listener: SessionChangeRequestsListener, options: ChangeRequestWatchOptions = {}): () => void',
+        description: 'Watch a Session\'s visible change requests as an effect on the calling fiber. Every visible change request that a provider recognizes is polled for its snapshot through `ctx.forge` while the Session has a watcher. Listeners receive the complete list after each later binding or provider change, or polling result; read the current list with changeRequests. Listeners must not throw; a thrown error is logged and skipped.',
+        parameters: [{ name: 'session', description: 'Session to watch.' }, { name: 'listener', description: 'receives the complete visible list.' }, { name: 'options', description: 'when the Session\'s first watcher needs a status newer than the latest one; a later watcher\'s options change nothing.' }],
         returns: 'the disposer that stops this watch.',
       },
     ],
@@ -2495,7 +2524,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'imageRequestTarget(provider: string, model: string, image: ImageAttachmentRef): ImageRequestTarget',
         description: 'Resolve the image projection for an exact registered model route.',
         parameters: [{ name: 'provider', description: 'registered provider route.' }, { name: 'model', description: 'exact model id.' }, { name: 'image', description: 'normalized image reference.' }],
-        returns: 'dimensions and byte target used by the adapter\'s request serializer.',
+        returns: 'maximum dimensions and byte budgets used by the request serializer; readImageRequest returns the actual encoded dimensions.',
       },
       {
         signature: 'fileRequestText(ref: FileAttachmentRef): string',
@@ -2840,7 +2869,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'set(agent: Agent, active: boolean): \'committed\' | \'queued\' | \'cancelled\' | \'noop\'',
-        description: 'Select whether plan mode should be active. Between turns the method appends the change immediately because no in-turn pre-step will run until another prompt starts a turn. The open-turn fold is the idle signal: agent status stays `running` through post-turn checkpointing, when no further in-turn pre-step runs. During an open turn the selection remains pending until the next accepted in-turn pre-step. Repeated selection of the current or already-pending state is a no-op.',
+        description: 'Select whether plan mode should be active. Between turns the method appends the change immediately because no in-turn pre-step will run until another prompt starts a turn. The open-turn fold is the idle signal: agent status stays `running` through post-turn checkpointing, when no further in-turn pre-step runs. During an open turn the selection remains pending until the next accepted in-turn pre-step. Repeated selection of the current or already-pending state is a no-op. Each committed user selection contributes a user-switch notice.',
         parameters: [{ name: 'agent', description: 'The agent to switch.' }, { name: 'active', description: 'Whether plan mode should be active.' }],
         returns: 'what happened: `committed` (logged now), `queued` (awaiting the next accepted in-turn pre-step), `cancelled` (an opposite pending selection was cleared; the logged state already matches), or `noop` (already in that state).',
       },
@@ -3161,6 +3190,49 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Stream the calling Peer\'s access snapshot: one baseline, then `upsert` and `remove` frames after each `invalidate()` and each policy registration or removal that changes a grant. The owner receives only `{ owner: true }`. The generation ends when `signal` aborts or this service unloads, so a reloaded service starts every reader from a fresh baseline.',
         parameters: [{ name: 'signal', description: 'generation cancellation.' }],
         returns: 'the access frames of one generation.',
+      },
+    ],
+  },
+  {
+    key: 'remoteConnection',
+    summary: 'Owner-authorized browser login through QR codes, private links, or pairing requests.',
+    description: 'Owner-authorized browser login through QR codes, private links, or pairing requests.',
+    methods: [
+      {
+        signature: '@Remote status(id: RemoteLoginId | null): RemoteConnectionStatus',
+        description: 'Read prerequisites and the state of one invitation without disclosing its credential.',
+        parameters: [{ name: 'id', description: 'invitation to inspect, or null to inspect only deployment prerequisites.' }],
+        returns: 'deployment availability and invitation state, with the polling interval.',
+      },
+      {
+        signature: '@Remote create(): RemoteLoginTicket',
+        description: 'Authorize a new browser by generating a one-use login invitation; replaces any older invitation.',
+        parameters: [],
+        returns: 'the invitation credential and its fixed expiry.',
+      },
+      {
+        signature: '@Remote loginUrl(): string',
+        description: 'Read the advertised URL carrying the process launch token; QR invitations are unchanged.',
+        parameters: [],
+        returns: 'owner-only login URL, reusable until the Host process restarts; never persist or log it.',
+      },
+      {
+        signature: '@Remote cancel(id: RemoteLoginId): RemoteLoginState',
+        description: 'Cancel an unused invitation; this never revokes a browser session already issued.',
+        parameters: [{ name: 'id', description: 'invitation being cancelled; an older ID cannot cancel a replacement.' }],
+        returns: 'the invitation\'s final state, including used when a redemption won the race.',
+      },
+      {
+        signature: '@Remote pairingRequests(signal: AbortSignal): PairingRequestsValue',
+        description: 'Read pending requests without the credentials used to collect their sessions.',
+        parameters: [{ name: 'signal', description: 'current Remote call\'s cancellation.' }],
+        returns: 'pending codes and the deployment\'s refresh interval.',
+      },
+      {
+        signature: '@Remote decidePairing(id: PairingRequestId, decision: PairingDecision, signal: AbortSignal): PairingDecisionResult',
+        description: 'Approve or deny one displayed code; the first decision is retained across retries.',
+        parameters: [{ name: 'id', description: 'request selected after comparing its code with the applicant\'s screen.' }, { name: 'decision', description: 'allow or deny full owner access for the requesting browser.' }, { name: 'signal', description: 'current Remote call\'s cancellation before the decision commits.' }],
+        returns: 'committed decision, or unavailable after cancellation, expiry, or collection.',
       },
     ],
   },
@@ -3679,12 +3751,6 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Observe one exact live or prepared Session without a persistence listing preflight.',
         parameters: [{ name: 'sessionId', description: 'logical Session identity.' }, { name: 'options', description: 'cancellation and projection selection for this read.' }],
         returns: 'a caller-owned observation lease.',
-      },
-      {
-        signature: 'inspectSession<T>(sessionId: SessionId, read: (session: Session) => T, signal?: AbortSignal): Promise<T>',
-        description: 'Inspect domain-owned state without attaching or resuming a cold Session. The getter runs synchronously after preparation and must not mutate or retain the Session.',
-        parameters: [{ name: 'sessionId', description: 'logical Session identity.' }, { name: 'read', description: 'domain getter returning detached data.' }, { name: 'signal', description: 'preparation cancellation.' }],
-        returns: 'the getter\'s value at the current live or prepared cut.',
       },
       {
         signature: 'abstract searchSessions( request: SessionSearchRequest, exec?: SessionSearchExecContext, ): Promise<SessionSearchPage<SessionSearchHit>>',
@@ -4364,6 +4430,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['when the caller or its runtime owner is unavailable.'],
       },
       {
+        signature: 'capacityOf(caller: Agent): SubagentCapacity',
+        description: 'Observe the shared concurrency capacity of the caller\'s subagent tree.',
+        parameters: [{ name: 'caller', description: 'exact live root or resident tree member.' }],
+        returns: 'occupied slots and the current limit; this observation reserves no capacity.',
+      },
+      {
         signature: 'namesOf(agent: Agent): SubagentMemberNames',
         description: 'Report the model-facing names of a live tree member and its direct creator. The root is `lead`; a descendant is the slash-separated path of names from the root, or its Session id when it or a creator below the root has no name.',
         parameters: [{ name: 'agent', description: 'exact live root or resident tree member.' }],
@@ -4477,9 +4549,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     methods: [
       {
         signature: 'section(section: PromptSection): () => void',
-        description: 'Register an ordered prompt section in the calling context\'s scope. A scoped section shadows a global section with the same name; duplicates within one layer and non-finite orders throw. Registration and disposal emit `system-prompt/change`.',
-        parameters: [{ name: 'section', description: 'the section to register.' }],
-        returns: 'the exact Cordis effect disposer.',
+        description: 'Register a section; the nearest scope wins, then the latest registration within that scope. Disposal reveals the next live definition. Retirement is admitted only after no registration remains in the visible scope chain.',
+        parameters: [{ name: 'section', description: 'definition, canonical order and optional transition notices.' }],
+        returns: 'the exact Cordis disposer; retirement is observed at later assembly.',
       },
       {
         signature: 'getSectionOrder(name: PromptSectionOrderName): number',
@@ -4525,9 +4597,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async assemble(context: AssembleContext = {}): Promise<PromptAssembly>',
-        description: 'Assemble global and scoped providers, detach tool parameters, apply canonical ordering, then run the presentation waterfall. Scoped sections and variables shadow globals. The waterfall\'s text is authoritative except that an effective complete section is restored afterwards as the sole prompt section; tool declarations stay provider-owned.',
+        description: 'Assemble global and scoped providers, detach tool parameters, apply canonical ordering, then run the presentation waterfall. Scoped variables shadow globals; section IDs have one effective owner. The waterfall\'s text is authoritative except that an effective complete section is restored afterwards as the sole prompt section; tool declarations stay provider-owned. Section text and lifecycle are fixed here; `systemUpdates()` compares them with committed state later.',
         parameters: [{ name: 'context', description: 'the optional scope, step tool set, and plugin-defined assembly fields.' }],
-        returns: 'the post-waterfall assembly with ordered tool declarations and any complete prompt enforced.',
+        returns: 'the post-waterfall presentation and the system updates for the supplied Session.',
       },
     ],
   },
@@ -4814,7 +4886,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'setExecutor(executor: ToolExecutor): () => void',
-        description: 'Provide the executor for the calling scope; an unscoped contribution is the deployment default. Rendering any executor-owned section requires the viewing scope\'s selection to remain available.',
+        description: 'Provide the executor for the calling scope; an unscoped contribution is the deployment default. Rendering any executor-owned section requires the viewing scope\'s selection to remain available. Disposal retires its sections; a replacement\'s same-name sections supersede those notices.',
         parameters: [{ name: 'executor', description: 'initialized provider owned by the contributing plugin.' }],
         returns: 'the effect disposer. Unloading leaves the selection unavailable until it is replaced.',
       },
@@ -4963,7 +5035,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     methods: [
       {
         signature: 'register(registration: UpstreamSkillsRegistration): UpstreamSkillsHandle',
-        description: 'Register the calling plugin\'s entry skill and start downloading the upstream files unless they are in place. The download starts at load so that a session without a client also gets the skill; a failure is logged as a warning and waits for `retry()`. The registration belongs to the calling plugin: unloading that plugin aborts the download and removes the entry skill.',
+        description: 'Register the calling plugin\'s entry skill and start downloading the upstream files unless they are in place. The download starts at load so that a session without a client also gets the skill; a failure is logged as a warning and waits for `retry()`. In a profile, the files go to that profile\'s own directory for the plugin, and the registration deletes the other pins there once, the first time its own pin is in place. The registration belongs to the calling plugin: unloading that plugin aborts the download and removes the entry skill.',
         parameters: [{ name: 'registration', description: 'the plugin\'s provider name, entry, pinned files, and optional skills directory.' }],
         returns: 'the handle the plugin\'s view observes and its check retries.',
         throws: ['when the entry has no skill name or description in its frontmatter, `skillsDir` is not a directory, or a skill provider named `name` is already registered.'],
@@ -5443,9 +5515,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['{WorktreeError} `WORKTREE_NOT_ENTERED` when no recorded worktree contains the current directory and `WORKTREE_UNAVAILABLE` after service disposal, or the working-directory service\'s error when the source checkout no longer exists.'],
       },
       {
-        signature: 'async cleanupOf(session: Session, revision: number | null): Promise<WorktreeCleanup | null>',
+        signature: 'async cleanupOf(sessionId: SessionId, revision: number | null): Promise<WorktreeCleanup | null>',
         description: 'Read the archive cleanup of a Session\'s created checkout; waiting never starts one. Absent without the Workspace and query providers.',
-        parameters: [{ name: 'session', description: 'archived Session whose cleanup is read.' }, { name: 'revision', description: 'null reads at once; a matching revision waits for that attempt to settle.' }],
+        parameters: [{ name: 'sessionId', description: 'archived Session whose cleanup is read; reading neither loads nor resumes it.' }, { name: 'revision', description: 'null reads at once; a matching revision waits for that attempt to settle.' }],
         returns: 'the attempt state, or null when none exists, the revision was superseded, or the service is stopping.',
       },
     ],
@@ -6035,7 +6107,7 @@ export const EVENT_API: readonly EventApiEntry[] = [
     mode: 'waterfall',
     signature: '\'system-prompt/assemble\'(this: Scoped<SystemPrompt>, assembly: PromptPresentation, context: AssembleContext, next: () => Promise<PromptPresentation>): Promise<PromptPresentation>',
     summary: 'Presentation waterfall over assembled sections, contexts, and variables.',
-    description: 'Presentation waterfall over assembled sections, contexts, and variables. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): scoped listeners receive only that scope\'s assemblies. The returned text is authoritative; tool declarations remain provider-owned. A supplied signal controls only this explicit assembly request and must not be retained to control later turns. A registered complete section is restored after this waterfall, so listeners cannot add to or replace that scope\'s system prompt.',
+    description: 'Presentation waterfall over assembled sections, contexts, and variables. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): scoped listeners receive only that scope\'s assemblies. Returned section text determines updates; omitting a previously admitted section leaves its instructions unchanged. Empty text withdraws its instructions; registration disposal retires it. Tool declarations remain provider-owned. A supplied signal controls only this explicit assembly request and must not be retained to control later turns. A registered complete section is restored after this waterfall, so listeners cannot add to or replace that scope\'s system prompt.',
     parameters: [{ name: 'assembly', description: 'the mutable assembly built from registered providers.' }, { name: 'context', description: 'the caller\'s per-assembly context.' }],
   },
   {
@@ -6524,7 +6596,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'AssembleContext',
-    declaration: 'export interface AssembleContext {\n    scope?: ScopeKey;\n    signal?: AbortSignal;\n}',
+    declaration: 'export interface AssembleContext {\n    session?: Session;\n    scope?: ScopeKey;\n    signal?: AbortSignal;\n}',
   },
   {
     name: 'AssembledContext',
@@ -6532,7 +6604,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'AssembledSection',
-    declaration: 'export interface AssembledSection {\n    name: string;\n    text: string;\n    interpolate?: boolean;\n}',
+    declaration: 'export interface AssembledSection {\n    complete?: boolean;\n    replacement?: string;\n    retire?: boolean;\n    order: number;\n    name: string;\n    text: string;\n    interpolate?: boolean;\n}',
   },
   {
     name: 'AssistantMessage',
@@ -6687,6 +6759,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ButtonProps {\n    readonly label: string;\n    readonly hotkey?: string | undefined;\n    readonly disabled?: boolean | undefined;\n    readonly onPress?: (() => unknown) | undefined;\n}',
   },
   {
+    name: 'ChangeRequestBrief',
+    declaration: 'export type ChangeRequestBrief = Pick<ChangeRequestSnapshot, \'ref\' | \'url\' | \'title\' | \'state\' | \'draft\' | \'mergeability\' | \'reviewDecision\' | \'checksRollup\'>;',
+  },
+  {
+    name: 'ChangeRequestBriefListener',
+    declaration: 'export type ChangeRequestBriefListener = (update: ChangeRequestBriefUpdate) => void;',
+  },
+  {
+    name: 'ChangeRequestBriefUpdate',
+    declaration: 'export type ChangeRequestBriefUpdate = {\n    readonly key: ChangeRequestKey;\n    readonly fetchedAt: number;\n} & ({\n    readonly brief: ChangeRequestBrief;\n} | {\n    readonly failure: ForgeFailure;\n});',
+  },
+  {
     name: 'ChangeRequestCheck',
     declaration: 'export interface ChangeRequestCheck {\n    readonly name: string;\n    readonly state: CheckState;\n    readonly url: string | null;\n    readonly workflow: string | null;\n    readonly startedAt: string | null;\n    readonly completedAt: string | null;\n    readonly rerun: ForgeCheckId | null;\n}',
   },
@@ -6701,6 +6785,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ChangeRequestKey',
     declaration: 'export type ChangeRequestKey = Branded<\'ChangeRequestKey\'>;',
+  },
+  {
+    name: 'ChangeRequestKnownState',
+    declaration: 'export interface ChangeRequestKnownState extends Pick<ChangeRequestBrief, \'state\' | \'mergeability\' | \'checksRollup\'> {\n    readonly fetchedAt: number;\n}',
   },
   {
     name: 'ChangeRequestLabel',
@@ -6741,6 +6829,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ChangeRequestViewerReview',
     declaration: 'export interface ChangeRequestViewerReview {\n    readonly verdict: ReviewVerdict;\n    readonly reviewedSha: string | null;\n}',
+  },
+  {
+    name: 'ChangeRequestWatchOptions',
+    declaration: 'export interface ChangeRequestWatchOptions {\n    readonly maxAgeMs?: number;\n}',
   },
   {
     name: 'ChangeResult',
@@ -7140,7 +7232,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'CreateSessionOptions',
-    declaration: 'export interface CreateSessionOptions {\n    readonly seed?: readonly SessionEvent[];\n    readonly inheritedEventCount?: SessionLogOffset;\n    readonly meta?: {\n        readonly cwd?: string;\n        readonly parentSession?: SessionId;\n        readonly createdAt?: number;\n        readonly isSeeded?: boolean;\n        readonly origin?: \'subagent\';\n        readonly delegationDepth?: number;\n        readonly agentPreset?: string;\n    };\n}',
+    declaration: 'export interface CreateSessionOptions {\n    readonly seed?: readonly SessionEvent[];\n    readonly inheritedEventCount?: SessionLogOffset;\n    readonly meta?: SessionHeaderMeta;\n}',
   },
   {
     name: 'CreateShareRequest',
@@ -7664,7 +7756,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ForgeProvider',
-    declaration: 'export interface ForgeProvider {\n    readonly forge: string;\n    readonly hosts: readonly string[];\n    readonly label: string;\n    readonly changeRequestNoun: ChangeRequestNoun;\n    readonly viewer?: ForgeViewerCapability;\n    listForViewer?(query: ForgeViewerQuery, signal: AbortSignal): Promise<ForgeViewerList | ForgeFailure>;\n    countForViewer?(host: string, signal: AbortSignal): Promise<ReadonlyMap<ForgeViewerFilter, number> | ForgeFailure>;\n    readDescription?(ref: ChangeRequestRef, signal: AbortSignal): Promise<ChangeRequestDescription | ForgeFailure>;\n    submitReview?(ref: ChangeRequestRef, request: ForgeReviewRequest, signal: AbortSignal): Promise<ForgeReviewResult>;\n    readReview?(ref: ChangeRequestRef, headSha: string, signal: AbortSignal): Promise<ForgeReviewData | ForgeFailure>;\n    writeReview?(ref: ChangeRequestRef, write: ForgeReviewWrite, signal: AbortSignal): Promise<ForgeReviewWriteResult>;\n    repositoryFromRemote(url: string): ForgeRepository | undefined;\n    changeRequestFromUrl(url: string): ChangeRequestRef | undefined;\n    changeRequestUrl(ref: ChangeRequestRef): string;\n    fetch(refs: readonly ChangeRequestRef[], signal: AbortSignal): Promise<ReadonlyMap<ChangeRequestKey, ChangeRequestSnapshot | ForgeFailure>>;\n    fetchChecks?(ref: ChangeRequestRef, signal: AbortSignal): Promise<ChangeRequestSnapshot | ForgeFailure>;\n    findByHead(repository: ForgeRepository, branch: string, signal: AbortSignal): Promise<readonly ChangeRequestRef[]>;\n    readin /* …truncated — full shape in source */',
+    declaration: 'export interface ForgeProvider {\n    readonly forge: string;\n    readonly hosts: readonly string[];\n    readonly label: string;\n    readonly changeRequestNoun: ChangeRequestNoun;\n    readonly viewer?: ForgeViewerCapability;\n    listForViewer?(query: ForgeViewerQuery, signal: AbortSignal): Promise<ForgeViewerList | ForgeFailure>;\n    countForViewer?(host: string, signal: AbortSignal): Promise<ReadonlyMap<ForgeViewerFilter, number> | ForgeFailure>;\n    readDescription?(ref: ChangeRequestRef, signal: AbortSignal): Promise<ChangeRequestDescription | ForgeFailure>;\n    submitReview?(ref: ChangeRequestRef, request: ForgeReviewRequest, signal: AbortSignal): Promise<ForgeReviewResult>;\n    readReview?(ref: ChangeRequestRef, headSha: string, signal: AbortSignal): Promise<ForgeReviewData | ForgeFailure>;\n    writeReview?(ref: ChangeRequestRef, write: ForgeReviewWrite, signal: AbortSignal): Promise<ForgeReviewWriteResult>;\n    repositoryFromRemote(url: string): ForgeRepository | undefined;\n    changeRequestFromUrl(url: string): ChangeRequestRef | undefined;\n    changeRequestUrl(ref: ChangeRequestRef): string;\n    fetch(refs: readonly ChangeRequestRef[], signal: AbortSignal): Promise<ReadonlyMap<ChangeRequestKey, ChangeRequestSnapshot | ForgeFailure>>;\n    fetchBriefs?(refs: readonly ChangeRequestRef[], signal: AbortSignal): Promise<ReadonlyMap<ChangeRequestKey, ChangeRequestBrief | ForgeFailure>>;\n    readonly snapshotBatchSize?: number;\n    readonly briefBatchSize?: number;\n    fetchCh /* …truncated — full shape in source */',
   },
   {
     name: 'ForgeReadiness',
@@ -7996,7 +8088,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ImageRequestTarget',
-    declaration: 'export interface ImageRequestTarget {\n    width: number;\n    height: number;\n    maxBytes: number;\n}',
+    declaration: 'export interface ImageRequestTarget {\n    width: number;\n    height: number;\n    maxImageBytes: number;\n    imageTargetBytes: number;\n}',
   },
   {
     name: 'ImageUploadValue',
@@ -8847,6 +8939,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface PaidTranslationSpec extends TranslationSpecFields {\n    readonly provider: PaidTranslationProvider;\n    readonly sessionId: SessionId;\n}',
   },
   {
+    name: 'PairingDecision',
+    declaration: 'export type PairingDecision = \'allow\' | \'deny\';',
+  },
+  {
+    name: 'PairingDecisionResult',
+    declaration: 'export type PairingDecisionResult = \'approved\' | \'denied\' | \'unavailable\';',
+  },
+  {
+    name: 'PairingRequestId',
+    declaration: 'export type PairingRequestId = Branded<\'PairingRequestId\'>;',
+  },
+  {
+    name: 'PairingRequestsValue',
+    declaration: 'export interface PairingRequestsValue {\n    readonly requests: readonly PendingPairingRequest[];\n    readonly pollIntervalMs: number;\n}',
+  },
+  {
     name: 'PaneOpenArgs',
     declaration: 'export interface PaneOpenArgs {\n    id: string;\n    title?: string;\n    focus?: true;\n    closeOnEscape?: true;\n    holdToasts?: true;\n    rows?: number;\n    columns?: number;\n}',
   },
@@ -8873,6 +8981,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PendingModule',
     declaration: 'export interface PendingModule {\n    url: string;\n    reason: \'host-module\' | \'unmanaged-plugin\' | \'module-comparison\';\n}',
+  },
+  {
+    name: 'PendingPairingRequest',
+    declaration: 'export interface PendingPairingRequest {\n    readonly id: PairingRequestId;\n    readonly code: string;\n    readonly authority: string;\n    readonly sourceIp: string | null;\n    readonly expiresInMs: number;\n}',
   },
   {
     name: 'PendingRemoteEventInfo',
@@ -9112,7 +9224,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PromptAssembly',
-    declaration: 'export interface PromptAssembly extends PromptPresentation {\n    tools: ToolSchema[];\n}',
+    declaration: 'export interface PromptAssembly extends PromptPresentation {\n    systemUpdates: (retry: boolean) => readonly SystemUpdate[];\n    tools: ToolSchema[];\n}',
   },
   {
     name: 'PromptContext',
@@ -9136,7 +9248,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PromptSection',
-    declaration: 'export interface PromptSection {\n    readonly name: string;\n    readonly order: number;\n    readonly text: string | ((context: AssembleContext) => string);\n    readonly interpolate?: boolean;\n    readonly complete?: boolean;\n}',
+    declaration: 'export interface PromptSection {\n    readonly name: string;\n    readonly order: number;\n    readonly text: string | ((context: AssembleContext) => string);\n    readonly interpolate?: boolean;\n    readonly complete?: boolean;\n    readonly replacement?: string;\n    readonly retirement?: string;\n}',
   },
   {
     name: 'PromptSectionOrderName',
@@ -9327,6 +9439,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface RemoteAccessRole<K extends RemoteAccessResourceKind> {\n    readonly name: string;\n    readonly resource: K;\n    readonly actions: readonly RemoteAccessAction[];\n}',
   },
   {
+    name: 'RemoteConnectionStatus',
+    declaration: 'export interface RemoteConnectionStatus {\n    readonly url: string;\n    readonly availability: \'available\' | RemoteConnectionUnavailable;\n    readonly loginUrlAllowed: boolean;\n    readonly ticket: RemoteLoginState;\n    readonly pollIntervalMs: number;\n}',
+  },
+  {
+    name: 'RemoteConnectionUnavailable',
+    declaration: 'export type RemoteConnectionUnavailable = \'unreachable-host\' | \'untrusted-host\';',
+  },
+  {
     name: 'RemoteError',
     declaration: 'export class RemoteError<Code extends RemoteErrorCode = RemoteErrorCode> extends HarnessError {\n    readonly isDSHRemoteError: true;\n    constructor(override readonly code: Code, message: string, readonly details: RemoteErrorDetailsMap[Code], options?: ErrorOptions);\n}',
   },
@@ -9345,6 +9465,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'RemoteEventHostInfo',
     declaration: 'export interface RemoteEventHostInfo {\n    readonly home: string;\n}',
+  },
+  {
+    name: 'RemoteLoginId',
+    declaration: 'export type RemoteLoginId = Branded<\'remote-login-id\'>;',
+  },
+  {
+    name: 'RemoteLoginState',
+    declaration: 'export type RemoteLoginState = \'none\' | \'pending\' | \'used\' | \'expired\' | \'cancelled\' | \'replaced\';',
+  },
+  {
+    name: 'RemoteLoginTicket',
+    declaration: 'export interface RemoteLoginTicket {\n    readonly id: RemoteLoginId;\n    readonly url: string;\n    readonly lifetimeMs: number;\n}',
   },
   {
     name: 'RemoteStream',
@@ -9883,6 +10015,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionHeader {\n    readonly version: typeof SESSION_FORMAT_VERSION;\n    readonly id: SessionId;\n    readonly createdAt: number;\n    readonly cwd?: string;\n    readonly parentSession?: SessionId;\n    readonly isSeeded: boolean;\n    readonly origin?: \'subagent\';\n    readonly delegationDepth?: number;\n    readonly agentPreset?: string;\n}',
   },
   {
+    name: 'SessionHeaderMeta',
+    declaration: 'export interface SessionHeaderMeta {\n    readonly cwd?: string;\n    readonly parentSession?: SessionId;\n    readonly createdAt?: number;\n    readonly isSeeded?: boolean;\n    readonly origin?: \'subagent\';\n    readonly delegationDepth?: number;\n    readonly agentPreset?: string;\n}',
+  },
+  {
     name: 'SessionHistoryRecord',
     declaration: 'export type SessionHistoryRecord = SessionEventEntry;',
   },
@@ -10212,7 +10348,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionSurface',
-    declaration: 'export interface SessionSurface {\n    readonly nodes: readonly SessionSeq[];\n    readonly replaceGeneration: number;\n    readonly contentGeneration: number;\n}',
+    declaration: 'export interface SessionSurface {\n    readonly nodes: readonly SessionSeq[];\n    readonly systemNodes: readonly SystemSurfaceNode[];\n    readonly replaceGeneration: number;\n    readonly contentGeneration: number;\n}',
   },
   {
     name: 'SessionSurfaceSnapshot',
@@ -10639,6 +10775,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SubagentCapabilities {\n    readonly agentOptions: boolean;\n    readonly agentPreset: boolean;\n    readonly outputSchema: boolean;\n    readonly depthLimit: boolean;\n}',
   },
   {
+    name: 'SubagentCapacity',
+    declaration: 'export interface SubagentCapacity {\n    readonly running: number;\n    readonly limit: number;\n}',
+  },
+  {
     name: 'SubagentCatalogRow',
     declaration: 'export type SubagentCatalogRow = {\n    readonly id: SessionId;\n    readonly activity: \'running\' | \'inactive\';\n} & KnownSubagentCatalogFields;',
   },
@@ -10704,7 +10844,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SubagentRuntime',
-    declaration: 'export class SubagentRuntime extends TypertRemoteService {\n    static Config;\n    static inject;\n    constructor(ctx: Context, private config: Config);\n    resolveMaxDepth(configured?: number | \'provider-managed\'): number | undefined;\n    startActivation(spec: SubagentActivationSpec & {\n        readonly childId: SessionId;\n    }): Promise<SubagentActivation & {\n        readonly messageId: MessageId;\n    }>;\n    startActivation(spec: SubagentActivationSpec): Promise<SubagentActivation>;\n    rootOf(caller: Agent): Agent;\n    namesOf(agent: Agent): SubagentMemberNames;\n    async resolveName(caller: Agent, name: string, signal: AbortSignal): Promise<SessionId>;\n    async waitForTreeWork(root: Agent): Promise<boolean>;\n    async sendMessage(sender: Agent, targetId: SessionId, content: ContentBlock[], options: SubagentSendMessageOptions): Promise<MessageId>;\n    interrupt(targetSessionId: SessionId, authority: SubagentInterruptAuthority): void;\n    async drainDescendants(parents: readonly Agent[]): Promise<void>;\n    listDescendants(rootSessionId: SessionId, signal?: AbortSignal): Promise<SubagentDescendantListEntry[]>;\n    @Remote({ name: \'prompt\', resources: { session: request => request.childSessionId } })\n    async prompt(request: SubagentPromptRequest, signal: AbortSignal): Promise<SubagentPromptReceipt>;\n    @Remote({ name: \'interruptByUser\', resources: { session: childSessionId => childSessionId } })\n    interruptByUser(childSessionId: SessionId): SubagentInterruptReceipt;\n  /* …truncated — full shape in source */',
+    declaration: 'export class SubagentRuntime extends TypertRemoteService {\n    static Config;\n    static inject;\n    constructor(ctx: Context, private config: Config);\n    get maxActiveSubagents(): number;\n    resolveMaxDepth(configured?: number | \'provider-managed\'): number | undefined;\n    startActivation(spec: SubagentActivationSpec & {\n        readonly childId: SessionId;\n    }): Promise<SubagentActivation & {\n        readonly messageId: MessageId;\n    }>;\n    startActivation(spec: SubagentActivationSpec): Promise<SubagentActivation>;\n    rootOf(caller: Agent): Agent;\n    capacityOf(caller: Agent): SubagentCapacity;\n    namesOf(agent: Agent): SubagentMemberNames;\n    async resolveName(caller: Agent, name: string, signal: AbortSignal): Promise<SessionId>;\n    async waitForTreeWork(root: Agent): Promise<boolean>;\n    async sendMessage(sender: Agent, targetId: SessionId, content: ContentBlock[], options: SubagentSendMessageOptions): Promise<MessageId>;\n    interrupt(targetSessionId: SessionId, authority: SubagentInterruptAuthority): void;\n    async drainDescendants(parents: readonly Agent[]): Promise<void>;\n    listDescendants(rootSessionId: SessionId, signal?: AbortSignal): Promise<SubagentDescendantListEntry[]>;\n    @Remote({ name: \'prompt\', resources: { session: request => request.childSessionId } })\n    async prompt(request: SubagentPromptRequest, signal: AbortSignal): Promise<SubagentPromptReceipt>;\n    @Remote({ name: \'interruptByUser\', resources: { session: childSessionId => childSes /* …truncated — full shape in source */',
   },
   {
     name: 'SubagentSendMessageOptions',
@@ -10824,15 +10964,27 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SystemPrompt',
-    declaration: 'export class SystemPrompt extends Service {\n    static Config: z<Config>;\n    constructor(ctx: Context, config: Config);\n    section(section: PromptSection): () => void;\n    getSectionOrder(name: PromptSectionOrderName): number;\n    getContextOrder(name: PromptContextOrderName): number;\n    context(context: PromptContext): () => void;\n    suppressRuntimeContext(): () => void;\n    tools(provider: (context: AssembleContext) => ToolProviderResult): () => void;\n    variable(name: string, provider: (context: AssembleContext) => string | undefined): () => void;\n    refreshContext(assembly: PromptAssembly, context: AssembleContext = {}): PromptAssembly;\n    async assemble(context: AssembleContext = {}): Promise<PromptAssembly>;\n}',
+    declaration: 'export class SystemPrompt extends Service {\n    static inject;\n    static Config: z<Config>;\n    constructor(ctx: Context, config: Config);\n    section(section: PromptSection): () => void;\n    getSectionOrder(name: PromptSectionOrderName): number;\n    getContextOrder(name: PromptContextOrderName): number;\n    context(context: PromptContext): () => void;\n    suppressRuntimeContext(): () => void;\n    tools(provider: (context: AssembleContext) => ToolProviderResult): () => void;\n    variable(name: string, provider: (context: AssembleContext) => string | undefined): () => void;\n    refreshContext(assembly: PromptAssembly, context: AssembleContext = {}): PromptAssembly;\n    async assemble(context: AssembleContext = {}): Promise<PromptAssembly>;\n}',
   },
   {
     name: 'SystemPromptMessageSource',
-    declaration: 'export interface SystemPromptMessageSource {\n    kind: \'system-prompt\';\n}',
+    declaration: 'export interface SystemPromptMessageSource {\n    kind: \'system-prompt\';\n    readonly complete?: true;\n    readonly reset?: true;\n    readonly sections?: readonly SystemPromptSectionState[];\n}',
+  },
+  {
+    name: 'SystemPromptSectionState',
+    declaration: 'export type SystemPromptSectionState = {\n    readonly name: string;\n    readonly noticeIndex?: readonly number[];\n} & ({\n    readonly state: \'active\';\n    readonly order: number;\n    readonly contentIndex: number;\n} | {\n    readonly state: \'retired\';\n    readonly contentIndex?: never;\n});',
   },
   {
     name: 'SystemPromptUpdate',
     declaration: 'export type SystemPromptUpdate = \'in-history\';',
+  },
+  {
+    name: 'SystemSurfaceNode',
+    declaration: 'export interface SystemSurfaceNode {\n    readonly seq: SessionSeq;\n    readonly isEmpty: boolean;\n}',
+  },
+  {
+    name: 'SystemUpdate',
+    declaration: 'export interface SystemUpdate {\n    readonly message: SystemMessage;\n    readonly intent: SurfaceIntent<\'system/message\'>;\n}',
   },
   {
     name: 'TableKeyOf',
